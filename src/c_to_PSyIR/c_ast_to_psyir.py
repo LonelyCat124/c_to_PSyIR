@@ -52,6 +52,8 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
 
     def visit_FuncDef(self, node: FuncDef) -> Routine:
         name = node.decl.name
+        if node.decl.type.args and len(node.decl.type.args.params) > 0:
+            return self.generic_visit(node)
         # Can't handle argument list for now
         args = []
         # Can't handle return type for now
