@@ -52,8 +52,23 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
 
     def visit_FuncDef(self, node: FuncDef) -> Routine:
         name = node.decl.name
+
+        routine_sym_tab = SymbolTable()
+        # Add it to the "stack" of symbol tables
+        self._symbol_tables.append(routine_sym_tab)
         if node.decl.type.args and len(node.decl.type.args.params) > 0:
-            return self.generic_visit(node)
+            # Time to get the arguments
+            rval = self.generic_visit(node)
+            args = []
+            for decl in node.decl.type.args.params:
+                self.visit(decl)
+                name = decl.name
+                sym = routine_sym_tab.lookup(name)
+                sym.is_argument = True
+                routine_sym_tab.append_argument(sym)
+            # Now remove the symbol table
+            self._symbol_tables.pop()
+            return rval
         # Can't handle argument list for now
         args = []
         # Can't handle return type for now
@@ -62,9 +77,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         # to be relatively complex so need to see what the cparser itself does with
         # visiting these objects.
         # Create the Routine's symbol table as it needs to be visible to the children.
-        routine_sym_tab = SymbolTable()
-        # Add it to the "stack" of symbol tables
-        self._symbol_tables.append(routine_sym_tab)
         # For arguments we need to put them in the symbol table we pass to routine.create
         psyir_children = []
         for child in node.body:
@@ -196,13 +208,12 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             ext.append(self._visit(child))
         return FileAST(ext)
         
-
     def node_node(self, node: PSynode.Node) -> None:
         assert False
 
 def translate_to_c():
     code = """
-        void test_func(){
+        void test_func(int d, int e){
             int c;
             c = c + 1;
         }
