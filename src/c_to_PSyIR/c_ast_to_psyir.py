@@ -10,7 +10,7 @@ from pycparser.c_ast import (
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
-from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType
+from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface
 
 type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
                                            ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
@@ -64,8 +64,10 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
                 self.visit(decl)
                 name = decl.name
                 sym = routine_sym_tab.lookup(name)
-                sym.is_argument = True
-                routine_sym_tab.append_argument(sym)
+                sym.interface = ArgumentInterface(
+                        ArgumentInterface.Access.UNKNOWN)
+                args.append(sym)
+            routine_sym_tab.specify_argument_list(args)
             # Now remove the symbol table
             self._symbol_tables.pop()
             return rval
