@@ -10,7 +10,7 @@ from pycparser.c_ast import (
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
-from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface
+from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType
 
 type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
                                            ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
@@ -108,12 +108,13 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         else:
             type_str = type_str[0]
         # For now we assume its an integer <_<
-        if type_str != "int":
-            assert False
+        intrinsic, precision = str_to_type_map.get(type_str, (None, None))
+        if intrinsic is None:
+            assert False # There must be some unknown type object we can do for this like we do for CodeBlocks.
         # TODO Convert type_str to symbol type - see the mapping on SFP.
         # Get the current symbol table. Its always the lowest one.
         sym_tab = self._symbol_tables[-1]
-        sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=INTEGER_TYPE)
+        sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=ScalarType(intrinsic, precision))
 
     def visit_Assignment(self, node: Assignment) -> PSyAssignment:
         lhs = self.visit(node.lvalue)
@@ -226,7 +227,7 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
 def translate_to_c():
     code = """
-        void test_func(int d, int e){
+        void test_func(int d, float e, double f){
             int c;
             c = c + 1;
         }
