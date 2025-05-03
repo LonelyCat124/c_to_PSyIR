@@ -20,6 +20,16 @@ type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", S
                 ScalarType.Intrinsic.BOOLEAN: {ScalarType.Precision.UNDEFINED: "bool"}
                }
 
+def create_str_to_type_map(type_map):
+    str_to_type_map = {}
+    for intrinsic in type_map.keys():
+        for precision in type_map[intrinsic]:
+            string = type_map[intrinsic][precision]
+            if string not in str_to_type_map.keys():
+                str_to_type_map[string] = (intrinsic, precision)
+    return str_to_type_map
+
+str_to_type_map = create_str_to_type_map(type_map)
 
 class CNode_to_PSyIR_Visitor(NodeVisitor):
     # Based on pycparser generator visitor.
