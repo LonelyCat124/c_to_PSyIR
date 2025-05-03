@@ -6,7 +6,7 @@ from psyclone.psyir.nodes import (
 from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
-        Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound
+        Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
@@ -58,7 +58,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         self._symbol_tables.append(routine_sym_tab)
         if node.decl.type.args and len(node.decl.type.args.params) > 0:
             # Time to get the arguments
-            rval = self.generic_visit(node)
             args = []
             for decl in node.decl.type.args.params:
                 self.visit(decl)
@@ -68,9 +67,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
                         ArgumentInterface.Access.UNKNOWN)
                 args.append(sym)
             routine_sym_tab.specify_argument_list(args)
-            # Now remove the symbol table
-            self._symbol_tables.pop()
-            return rval
         # Can't handle argument list for now
         args = []
         # Can't handle return type for now
@@ -190,15 +186,20 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # TODO Return type, arguments, symbol_table
 #        rval = f"void {name}()" + "{\n"
         body = []
+        arglist = []
         for symbol in node.symbol_table.symbols:
-            body.append(self.datasymbol_to_decl(symbol))
+            if symbol.is_argument:
+                arglist.append(self.datasymbol_to_decl(symbol))
+            else:
+                body.append(self.datasymbol_to_decl(symbol))
         for child in node.children:
             body.append(self._visit(child))
 
+        params = ParamList(arglist)
         # Create the Decl for the FuncDecl for the FuncDef
         # TODO At the moment arguments nor non-void types are supported
         # Most of Decl is unsupported also.
-        dtype = FuncDecl(args=None, type=TypeDecl(declname=name,quals=[],align=None, type=IdentifierType(names=["void"])))
+        dtype = FuncDecl(args=params, type=TypeDecl(declname=name,quals=[],align=None, type=IdentifierType(names=["void"])))
         decl = Decl(name=name, type=dtype, quals=None, align=None, storage=None, funcspec=None, init=None, bitsize=None) 
     
         # Create the FuncDef TODO Argument list.
