@@ -6,7 +6,8 @@ from psyclone.psyir.nodes import (
 from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
-        Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList
+        Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList,
+        Struct
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
@@ -42,7 +43,15 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
     def visit(self, node: Node) -> PSynode.Node:
         # TODO Can maybe do better with mro ordering like PSyclone
         method = 'visit_' + node.__class__.__name__
-        return getattr(self, method, self.generic_visit)(node)
+        try:
+            return getattr(self, method, self.generic_visit)(node)
+        except Exception as e:
+            # FIXME Try replacing this Error with a more precise Error.
+            code_block = self.generic_visit(node)
+            comment = f"Failed to handle input node of type (type(node))"
+            comment += f"Failed with error {str(e)}"
+            code_block.preceding_comment = comment
+            return code_block
 
     def generic_visit(self, node: Node) -> C_CodeBlock:
         # For something we don't handle explicitly we need a C_CodeBlock!
@@ -56,8 +65,12 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         psyir_children = []
         # TODO Fix symbol tables (urgh)
         symbol_table = SymbolTable()
+        self._symbol_tables.append(symbol_table)
         for child in node:
-            psyir_children.append(self.visit(child))
+            res = self.visit(child)
+            if res:
+                psyir_children.append(res)
+        self._symbol_tables.pop()
         return FileContainer.create("", symbol_table, psyir_children) 
 
     def visit_FuncDef(self, node: FuncDef) -> Routine:
@@ -102,6 +115,13 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
     def visit_Decl(self, node: Decl) -> None:
         name = node.name
         typedef = node.type
+        # Structure declaration makes a CodeBlock for now.
+        if isinstance(node.type, Struct):
+            return self.generic_visit(node)
+        # Structure type declaration also makes a Codeblock for now.
+        # This is a relatively easy fix though.
+        if isinstance(node.type.type, Struct):
+            return self.generic_visit(node)
         type_str = node.type.type.names
         if(len(type_str) > 1):
             assert False # Need to think what this means - maybe pointers? Or long long int etc.i
@@ -218,6 +238,9 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
     def filecontainer_node(self, node: FileContainer) -> FileAST:
         ext = []
+        for symbol in node.symbol_table.symbols:
+            if isinstance(symbol, DataSymbol):
+                ext.append(self.datasymbol_to_decl(symbol))
         for child in node.children:
             ext.append(self._visit(child))
         return FileAST(ext)
@@ -227,8 +250,14 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
 def translate_to_c():
     code = """
+        int x;
+        struct name{
+            double f;
+        };
         void test_func(int d, float e, double f){
+            struct name thing;
             int c;
+            int *a;
             c = c + 1;
         }
     """
