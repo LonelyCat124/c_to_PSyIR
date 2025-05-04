@@ -21,6 +21,25 @@ type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", S
                 ScalarType.Intrinsic.BOOLEAN: {ScalarType.Precision.UNDEFINED: "bool"}
                }
 
+class CommentNode(Node):
+    __slots__ = {'message', 'coord', '__weakref__'}
+    def __init__(self, message: str, coord=None):
+        self.message = message
+
+    def children(self):
+        return ()
+
+    def __iter__(self):
+        return
+        yield
+
+    attr_names = ()
+
+class CGeneratorExtension(c_generator.CGenerator):
+    def visit_CommentNode(self, node: CommentNode) -> str:
+        return "/*" + node.message + "*/"
+
+
 def create_str_to_type_map(type_map):
     str_to_type_map = {}
     for intrinsic in type_map.keys():
@@ -48,7 +67,7 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         except Exception as e:
             # FIXME Try replacing this Error with a more precise Error.
             code_block = self.generic_visit(node)
-            comment = f"Failed to handle input node of type (type(node))"
+            comment = f"Failed to handle input node of type '{(type(node))}'. "
             comment += f"Failed with error {str(e)}"
             code_block.preceding_comment = comment
             return code_block
@@ -117,11 +136,11 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         typedef = node.type
         # Structure declaration makes a CodeBlock for now.
         if isinstance(node.type, Struct):
-            return self.generic_visit(node)
+            raise NotImplementedError("Structure declarations not yet implemented.")
         # Structure type declaration also makes a Codeblock for now.
         # This is a relatively easy fix though.
         if isinstance(node.type.type, Struct):
-            return self.generic_visit(node)
+            raise NotImplementedError("Structure initialisation not yet implemented.")
         type_str = node.type.type.names
         if(len(type_str) > 1):
             assert False # Need to think what this means - maybe pointers? Or long long int etc.i
@@ -173,13 +192,16 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
     # This initial thing doesn't do that and is naught but it works to try stuff.
 
     def __call__(self, node: PSynode.Node) -> str:
-        generator = c_generator.CGenerator()
+        generator = CGeneratorExtension()
         # Maybe we want (likely) to call super.__call__ instead of just self._visit for
         # supporting lowering.
         return generator.visit(self._visit(node))
 
-    def c_codeblock_node(self, node: C_CodeBlock) -> Node:
-        return node.get_ast_nodes[0]
+    def c_codeblock_node(self, node: C_CodeBlock) -> list[Node]:
+        pre_comment = node.preceding_comment
+        comment = CommentNode(pre_comment)
+        node = node.get_ast_nodes[0]
+        return [comment, node]
 
     def reference_node(self, node: Reference) -> ID:
         return ID(name=node.name)
@@ -224,7 +246,7 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             else:
                 body.append(self.datasymbol_to_decl(symbol))
         for child in node.children:
-            body.append(self._visit(child))
+            body.extend(self._visit(child))
 
         params = ParamList(arglist)
         # Create the Decl for the FuncDecl for the FuncDef
@@ -242,7 +264,8 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             if isinstance(symbol, DataSymbol):
                 ext.append(self.datasymbol_to_decl(symbol))
         for child in node.children:
-            ext.append(self._visit(child))
+            res = self._visit(child)
+            ext.extend(res)
         return FileAST(ext)
         
     def node_node(self, node: PSynode.Node) -> None:
