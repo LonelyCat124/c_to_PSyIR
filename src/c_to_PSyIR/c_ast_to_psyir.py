@@ -1,13 +1,13 @@
 from c_to_PSyIR.C_CodeBlock import C_CodeBlock
 import psyclone.psyir.nodes.node as PSynode
 from psyclone.psyir.nodes import (
-        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal
+        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop
 )
 from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
         Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList,
-        Struct
+        Struct, For
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
@@ -63,7 +63,8 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         # TODO Can maybe do better with mro ordering like PSyclone
         method = 'visit_' + node.__class__.__name__
         try:
-            return getattr(self, method, self.generic_visit)(node)
+            return getattr(self, method, None)(node)
+            #return getattr(self, method, self.generic_visit)(node)
         except Exception as e:
             # FIXME Try replacing this Error with a more precise Error.
             code_block = self.generic_visit(node)
@@ -185,6 +186,24 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             assert False
         return Literal(value, INTEGER_TYPE)
 
+    def visit_For(self, node: For) -> Loop:
+        print(node)
+        start = node.init
+        # start needs to be an integer value set assignment.
+        stop = node.cond
+        # Stop condition needs to be a < statement if step is positive increment, or
+        # a > statement if step is a negative increment and must be relative to the start
+        # assignment
+        step = node.next
+        # Step condition needs to be a ++, --, +=, -= or equivalent statement.
+        # TODO Check the Loop condition is ok - needs to be basic for PSyclone
+        # to parse it.
+        #body = self.visit(node.stmt)
+        body = []
+        for child in node.stmt:
+            body.append(self.visit(child))
+        raise NotImplementedError("For loop NYI")
+
 
 class PSyIR_to_C_Visitor(PSyIRVisitor):
     # TODO
@@ -282,6 +301,9 @@ def translate_to_c():
             int c;
             int *a;
             c = c + 1;
+            for(d = 0; d < d+1; d++){
+                a[i] = 2;
+            }
         }
     """
 
