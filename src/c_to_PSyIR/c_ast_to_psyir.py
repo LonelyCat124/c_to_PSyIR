@@ -7,7 +7,7 @@ from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
         Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList,
-        Struct, For
+        Struct, For, UnaryOp
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
@@ -197,7 +197,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         return loop_var_name, loop_start
 
     def _check_loop_stop_validity(self, loop_stop: Node, loop_var: Symbol, loop_step: Literal) -> PSynode.Node:
-        print(loop_stop)
         if not isinstance(loop_stop, BinaryOp):
             raise NotImplementedError("Only support BinaryOp loop_stop conditions")
         # Unpack the loop_stop
@@ -214,13 +213,40 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             raise NotImplementedError("The lhs or rhs of the loop_stop condition must be the loop variable")
         if left_loop_var and right_loop_var:
             raise NotImplementedError("Can't handle a loop_var comparison with itself")
-        
+        step_as_int = int(loop_step.value)
+        if step_as_int > 0:
+            if left_loop_var and op == "<":
+                return self.visit(right)
+            if left_loop_var and op == "<=":
+                raise NotImplementedError("Support for <= in loop condition NYI")
+            if right_loop_var and op == ">":
+                return self.visit(left)
+            if right_loop_var and op == ">=":
+                raise NotImplementedError("Support for >= in loop condition NYI")
+        if step_as_int < 0:
+            if left_loop_var and op == ">":
+                return self.visit(right)
+            if left_loop_var and op == ">=":
+                raise NotImplementedError("Support for >= in loop condition NYI")
+            if right_loop_var and op == "<":
+                return self.visit(left)
+            if right_loop_var and op == "<=":
+                raise NotImplementedError("Support for <= in loop condition NYI")
 
-        raise NotImplementedError("Checking loop stop validity NYI")
+        raise NotImplementedError("Unsupported loop stop condition")
 
 
-    def _check_loop_step_validity(self, loop_step: Node) -> Literal:
-        raise NotImplementedError("Checking loop step validity NYI")
+    def _check_loop_step_validity(self, loop_step: Node) -> PSynode.Node:
+        if isinstance(loop_step, UnaryOp):
+            print(loop_step)
+            if loop_step.op == "p++":
+                return Literal("1", INTEGER_TYPE)
+            elif loop_step.op == "p--":
+                return Literal("-1", INTEGER_TYPE)
+            else:
+                raise NotImplementedError("Unsupported UnaryOp in loop_step")
+        else:
+            raise NotImplementedError("Non-unary op steps NYI")
 
     def visit_For(self, node: For) -> Loop:
         start = node.init
@@ -228,18 +254,21 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             raise NotImplementedError("For loops with declarations aren't supported.")
         # start needs to be an integer value set assignment.
         loop_var_name, start_cond = self._check_loop_init_validity(start)
-        for symbol_table in self._symbol_tables[-1:1:-1]:
+        loop_var = None
+        for symbol_table in self._symbol_tables[::-1]:
             var_symbol = symbol_table.lookup(loop_var_name, otherwise=None)
             if var_symbol is not None:
                 loop_var = var_symbol
                 break
+        if not loop_var:
+            raise NotImplementedError("Failed to find the symbol of the Loop")
         # TODO Move this thing up into _check_loop_init_validity and also check the
         # symbol is an integer.
         step = node.next
         step_cond = self._check_loop_step_validity(step)
         # Step condition needs to be a ++, --, +=, -= or equivalent statement.
         stop = node.cond
-        stop_cond = self._check_loop_stop_validity(stop, loop_var)
+        stop_cond = self._check_loop_stop_validity(stop, loop_var, step_cond)
         # Stop condition needs to be a < statement if step is positive increment, or
         # a > statement if step is a negative increment and must be relative to the start
         # assignment
@@ -263,11 +292,13 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # supporting lowering.
         return generator.visit(self._visit(node))
 
-    def c_codeblock_node(self, node: C_CodeBlock) -> list[Node]:
+    def c_codeblock_node(self, node: C_CodeBlock) -> Node:
         pre_comment = node.preceding_comment
         comment = CommentNode(pre_comment)
         node = node.get_ast_nodes[0]
-        return [comment, node]
+        # TODO Handle returning comments again
+        #return [comment, node]
+        return node
 
     def reference_node(self, node: Reference) -> ID:
         return ID(name=node.name)
@@ -312,7 +343,11 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             else:
                 body.append(self.datasymbol_to_decl(symbol))
         for child in node.children:
-            body.extend(self._visit(child))
+            res = self._visit(child)
+            if isinstance(res, list):
+                body.extend(res)
+            else:
+                body.append(res)
 
         params = ParamList(arglist)
         # Create the Decl for the FuncDecl for the FuncDef
@@ -331,8 +366,51 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
                 ext.append(self.datasymbol_to_decl(symbol))
         for child in node.children:
             res = self._visit(child)
-            ext.extend(res)
+            if isinstance(res, list):
+                ext.extend(res)
+            else:
+                ext.extend(res)
         return FileAST(ext)
+
+    def loop_node(self, node: Loop) -> For:
+        loop_body = node.children[3]
+        body = []
+        for child in loop_body:
+            rest = self._visit(child)
+            if isinstance(rest, list):
+                body.extend(rest)
+            else:
+                body.append(rest)
+
+        var = node.variable
+        start = node.start_expr
+        next = node.stop_expr
+        cond = node.step_expr
+
+        init_left = ID(name=node.variable.name)
+        init_right = self._visit(node.start_expr)
+        init = Assignment("=", init_left, init_right)
+
+        step_val = int(node.step_expr.value)
+        if(step_val > 0):
+            stop_left = ID(name=node.variable.name)
+            stop_right = self._visit(next)
+            next = BinaryOp("<", stop_left, stop_right)
+
+            if(step_val == 1):
+                step = UnaryOp("p++", ID(name=node.variable.name))
+            else:
+                assert False
+        else:
+            stop_left = ID(name=node.variable.name)
+            stop_right = self._visit(next)
+            next = BinaryOp(">", stop_left, stop_right)
+            if(step_val == -1):
+                step = UnaryOp("p--", ID(name=node.variable.name))
+
+        # init, next, cond, stmt 
+    
+        return For(init, next, step, Compound(body))
         
     def node_node(self, node: PSynode.Node) -> None:
         assert False
@@ -348,7 +426,7 @@ def translate_to_c():
             int c;
             int *a;
             c = c + 1;
-            for(d = 0; d < d+1; d++){
+            for(d = 0; d < f; d++){
                 a[i] = 2;
             }
             for(int e = 0; e < e + 1; e++){
