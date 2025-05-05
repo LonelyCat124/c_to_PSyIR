@@ -11,7 +11,7 @@ from pycparser.c_ast import (
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
-from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType
+from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol
 
 type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
                                            ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
@@ -186,23 +186,70 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             assert False
         return Literal(value, INTEGER_TYPE)
 
+    def _check_loop_init_validity(self, loop_init: Node) -> (str, Node):
+        # Op must be "="
+        if loop_init.op != "=":
+            raise NotImplementedError("Operations other than = aren't supported on loop init statements")
+        if not isinstance(loop_init.lvalue, ID):
+            raise NotImplementedError("Got a loop_init.lvalue that isn't an ID, don't understand.")
+        loop_var_name = loop_init.lvalue.name
+        loop_start = self.visit(loop_init.rvalue)
+        return loop_var_name, loop_start
+
+    def _check_loop_stop_validity(self, loop_stop: Node, loop_var: Symbol, loop_step: Literal) -> PSynode.Node:
+        print(loop_stop)
+        if not isinstance(loop_stop, BinaryOp):
+            raise NotImplementedError("Only support BinaryOp loop_stop conditions")
+        # Unpack the loop_stop
+        op = loop_stop.op
+        left = loop_stop.left
+        right = loop_stop.right
+        left_loop_var = False
+        right_loop_var = False
+        if isinstance(left, ID) and left.name == loop_var.name:
+            left_loop_var = True
+        if isinstance(right, ID) and right.name == loop_var.name:
+            right_loop_var = True
+        if not left_loop_var and not right_loop_var:
+            raise NotImplementedError("The lhs or rhs of the loop_stop condition must be the loop variable")
+        if left_loop_var and right_loop_var:
+            raise NotImplementedError("Can't handle a loop_var comparison with itself")
+        
+
+        raise NotImplementedError("Checking loop stop validity NYI")
+
+
+    def _check_loop_step_validity(self, loop_step: Node) -> Literal:
+        raise NotImplementedError("Checking loop step validity NYI")
+
     def visit_For(self, node: For) -> Loop:
-        print(node)
         start = node.init
+        if not isinstance(node.init, Assignment):
+            raise NotImplementedError("For loops with declarations aren't supported.")
         # start needs to be an integer value set assignment.
+        loop_var_name, start_cond = self._check_loop_init_validity(start)
+        for symbol_table in self._symbol_tables[-1:1:-1]:
+            var_symbol = symbol_table.lookup(loop_var_name, otherwise=None)
+            if var_symbol is not None:
+                loop_var = var_symbol
+                break
+        # TODO Move this thing up into _check_loop_init_validity and also check the
+        # symbol is an integer.
+        step = node.next
+        step_cond = self._check_loop_step_validity(step)
+        # Step condition needs to be a ++, --, +=, -= or equivalent statement.
         stop = node.cond
+        stop_cond = self._check_loop_stop_validity(stop, loop_var)
         # Stop condition needs to be a < statement if step is positive increment, or
         # a > statement if step is a negative increment and must be relative to the start
         # assignment
-        step = node.next
-        # Step condition needs to be a ++, --, +=, -= or equivalent statement.
         # TODO Check the Loop condition is ok - needs to be basic for PSyclone
         # to parse it.
         #body = self.visit(node.stmt)
         body = []
         for child in node.stmt:
             body.append(self.visit(child))
-        raise NotImplementedError("For loop NYI")
+        return Loop.create(loop_var, start_cond, stop_cond, step_cond, body)
 
 
 class PSyIR_to_C_Visitor(PSyIRVisitor):
@@ -302,6 +349,9 @@ def translate_to_c():
             int *a;
             c = c + 1;
             for(d = 0; d < d+1; d++){
+                a[i] = 2;
+            }
+            for(int e = 0; e < e + 1; e++){
                 a[i] = 2;
             }
         }
