@@ -65,10 +65,16 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         try:
             return getattr(self, method, None)(node)
             #return getattr(self, method, self.generic_visit)(node)
+        except NotImplementedError as e:
+            code_block = self.generic_visit(node)
+            comment = f"Codeblock created - NYI error {str(e)}"
+            code_block.preceding_comment = comment
+            return code_block
         except Exception as e:
             # FIXME Try replacing this Error with a more precise Error.
             code_block = self.generic_visit(node)
-            comment = f"Failed to handle input node of type '{(type(node))}'. "
+            comment = "Codeblock created - unsupported code: "
+            comment += f"Failed to handle input node of type '{(type(node))}'. "
             comment += f"Failed with error {str(e)}"
             code_block.preceding_comment = comment
             return code_block
@@ -292,13 +298,18 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # supporting lowering.
         return generator.visit(self._visit(node))
 
-    def c_codeblock_node(self, node: C_CodeBlock) -> Node:
+    def strip_comments(self, nodes: list[Node] | Node):
+         if isinstance(nodes, list):
+            return nodes[1]
+         else:
+            return nodes
+
+    def c_codeblock_node(self, node: C_CodeBlock) -> list[CommentNode, Node]:
         pre_comment = node.preceding_comment
         comment = CommentNode(pre_comment)
         node = node.get_ast_nodes[0]
         # TODO Handle returning comments again
-        #return [comment, node]
-        return node
+        return [comment, node]
 
     def reference_node(self, node: Reference) -> ID:
         return ID(name=node.name)
@@ -306,6 +317,9 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
     def binaryoperation_node(self, node: BinaryOperation) -> BinaryOp:
         lhs = self._visit(node.children[0])
         rhs = self._visit(node.children[1])
+        # Remove comments in case of CodeBlocks
+        lhs = self.strip_comments(lhs)
+        rhs = self.strip_comments(rhs)
         # TODO This is bad lmao.
         op = "+"
         return BinaryOp(op, lhs, rhs)
@@ -313,6 +327,9 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
     def assignment_node(self, node: PSyAssignment) -> Assignment:
         lhs = self._visit(node.lhs)
         rhs = self._visit(node.rhs)
+        # Remove comments in case of CodeBlocks
+        lhs = self.strip_comments(lhs)
+        rhs = self.strip_comments(rhs)
         return Assignment("=", lhs, rhs)
 
     def literal_node(self, node: Literal) -> Constant:
@@ -389,12 +406,14 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
         init_left = ID(name=node.variable.name)
         init_right = self._visit(node.start_expr)
+        init_right = self.strip_comments(init_right)
         init = Assignment("=", init_left, init_right)
 
         step_val = int(node.step_expr.value)
         if(step_val > 0):
             stop_left = ID(name=node.variable.name)
             stop_right = self._visit(next)
+            stop_right = self.strip_comments(stop_right)
             next = BinaryOp("<", stop_left, stop_right)
 
             if(step_val == 1):
@@ -404,9 +423,12 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         else:
             stop_left = ID(name=node.variable.name)
             stop_right = self._visit(next)
+            stop_right = self.strip_comments(stop_right)
             next = BinaryOp(">", stop_left, stop_right)
             if(step_val == -1):
                 step = UnaryOp("p--", ID(name=node.variable.name))
+            else:
+                assert False
 
         # init, next, cond, stmt 
     
@@ -427,7 +449,8 @@ def translate_to_c():
             int *a;
             c = c + 1;
             for(d = 0; d < f; d++){
-                a[i] = 2;
+                a[d] = 2;
+                a[d] = c + -1;
             }
             for(int e = 0; e < e + 1; e++){
                 a[i] = 2;
