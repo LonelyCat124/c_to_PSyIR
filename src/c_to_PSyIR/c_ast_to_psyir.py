@@ -1,7 +1,7 @@
 from c_to_PSyIR.C_CodeBlock import C_CodeBlock
 import psyclone.psyir.nodes.node as PSynode
 from psyclone.psyir.nodes import (
-        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop
+        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop, UnaryOperation
 )
 from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
@@ -21,6 +21,49 @@ type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", S
                 ScalarType.Intrinsic.BOOLEAN: {ScalarType.Precision.UNDEFINED: "bool"}
                }
 
+def create_str_to_type_map(type_map: map) -> map:
+    str_to_type_map = {}
+    for intrinsic in type_map.keys():
+        for precision in type_map[intrinsic]:
+            string = type_map[intrinsic][precision]
+            if string not in str_to_type_map.keys():
+                str_to_type_map[string] = (intrinsic, precision)
+    return str_to_type_map
+
+str_to_type_map = create_str_to_type_map(type_map)
+
+def invert_map(in_map: map) -> map:
+    inverted_map = {}
+    for name in in_map.keys():
+        inverted_map[in_map[name]] = name
+    return inverted_map
+
+c_to_f_binop_operator_map = {
+        "+": BinaryOperation.Operator.ADD,
+        "-": BinaryOperation.Operator.SUB,
+        "*": BinaryOperation.Operator.MUL,
+        "/": BinaryOperation.Operator.DIV,
+        "==": BinaryOperation.Operator.EQ, # No difference for logical operations.
+        "!=": BinaryOperation.Operator.NE,
+        ">": BinaryOperation.Operator.GT,
+        "<": BinaryOperation.Operator.LT,
+        ">=": BinaryOperation.Operator.GE,
+        "<=": BinaryOperation.Operator.LE,
+        "&&": BinaryOperation.Operator.AND,
+        "&&": BinaryOperation.Operator.OR,
+}
+
+f_to_c_binop_operator_map = invert_map(c_to_f_binop_operator_map)
+
+c_to_f_unary_operator_map = {
+        "-": UnaryOperation.Operator.MINUS,
+        "+": UnaryOperation.Operator.PLUS,
+        "!": UnaryOperation.Operator.NOT,
+}
+
+f_to_c_unary_operator_map = invert_map(c_to_f_unary_operator_map)
+
+
 class CommentNode(Node):
     __slots__ = {'message', 'coord', '__weakref__'}
     def __init__(self, message: str, coord=None):
@@ -38,18 +81,6 @@ class CommentNode(Node):
 class CGeneratorExtension(c_generator.CGenerator):
     def visit_CommentNode(self, node: CommentNode) -> str:
         return "/*" + node.message + "*/"
-
-
-def create_str_to_type_map(type_map):
-    str_to_type_map = {}
-    for intrinsic in type_map.keys():
-        for precision in type_map[intrinsic]:
-            string = type_map[intrinsic][precision]
-            if string not in str_to_type_map.keys():
-                str_to_type_map[string] = (intrinsic, precision)
-    return str_to_type_map
-
-str_to_type_map = create_str_to_type_map(type_map)
 
 class CNode_to_PSyIR_Visitor(NodeVisitor):
     # Based on pycparser generator visitor.
@@ -116,8 +147,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
                         ArgumentInterface.Access.UNKNOWN)
                 args.append(sym)
             routine_sym_tab.specify_argument_list(args)
-        # Can't handle argument list for now
-        args = []
         # Can't handle return type for now
         # This info is all contained in the FuncDef object of this node.decl.type
         # Probably this needs to be in some sort of visitor or something but seems
@@ -180,7 +209,9 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
     def visit_BinaryOp(self, node: BinaryOp) -> BinaryOperation:
         lhs = self.visit(node.left)
         # TODO Op needs a string to operator conversion. Think this is on SFP as well
-        op = BinaryOperation.Operator.ADD 
+        op = c_to_f_binop_operator_map.get(node.op, None)
+        if not op:
+            raise NotImplementedError("Unsupported BinaryOperation operator")
         rhs = self.visit(node.right)
         return BinaryOperation.create(op, lhs, rhs)
 
@@ -244,7 +275,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
 
     def _check_loop_step_validity(self, loop_step: Node) -> PSynode.Node:
         if isinstance(loop_step, UnaryOp):
-            print(loop_step)
             if loop_step.op == "p++":
                 return Literal("1", INTEGER_TYPE)
             elif loop_step.op == "p--":
@@ -280,11 +310,12 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         # assignment
         # TODO Check the Loop condition is ok - needs to be basic for PSyclone
         # to parse it.
-        #body = self.visit(node.stmt)
         body = []
         for child in node.stmt:
             body.append(self.visit(child))
         return Loop.create(loop_var, start_cond, stop_cond, step_cond, body)
+
+#    def visit_UnaryOp(self, node: UnaryOp) -> UnaryOperation:
 
 
 class PSyIR_to_C_Visitor(PSyIRVisitor):
@@ -321,7 +352,7 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         lhs = self.strip_comments(lhs)
         rhs = self.strip_comments(rhs)
         # TODO This is bad lmao.
-        op = "+"
+        op = f_to_c_binop_operator_map[node.operator]
         return BinaryOp(op, lhs, rhs)
 
     def assignment_node(self, node: PSyAssignment) -> Assignment:
@@ -419,7 +450,7 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             if(step_val == 1):
                 step = UnaryOp("p++", ID(name=node.variable.name))
             else:
-                assert False
+                raise NotImplementedError("Don't yet support non unit loop strides")
         else:
             stop_left = ID(name=node.variable.name)
             stop_right = self._visit(next)
@@ -428,7 +459,7 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             if(step_val == -1):
                 step = UnaryOp("p--", ID(name=node.variable.name))
             else:
-                assert False
+                raise NotImplementedError("Don't yet support non unit loop strides")
 
         # init, next, cond, stmt 
     
@@ -451,6 +482,7 @@ def translate_to_c():
             for(d = 0; d < f; d++){
                 a[d] = 2;
                 a[d] = c + -1;
+                a[d] = a[d] - 1;
             }
             for(int e = 0; e < e + 1; e++){
                 a[i] = 2;
