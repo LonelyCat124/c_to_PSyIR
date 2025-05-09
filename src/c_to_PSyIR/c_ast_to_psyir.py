@@ -315,7 +315,10 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             body.append(self.visit(child))
         return Loop.create(loop_var, start_cond, stop_cond, step_cond, body)
 
-#    def visit_UnaryOp(self, node: UnaryOp) -> UnaryOperation:
+    def visit_UnaryOp(self, node: UnaryOp) -> UnaryOperation:
+        op = node.op
+        expr = self.visit(node.expr)
+        return UnaryOperation.create(c_to_f_unary_operator_map[op], expr)
 
 
 class PSyIR_to_C_Visitor(PSyIRVisitor):
@@ -464,6 +467,12 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # init, next, cond, stmt 
     
         return For(init, next, step, Compound(body))
+
+    def unaryoperation_node(self, node: UnaryOperation) -> UnaryOp:
+        op = f_to_c_unary_operator_map[node.operator]
+        expr = self._visit(node.children[0])
+        return UnaryOp(op, expr)
+
         
     def node_node(self, node: PSynode.Node) -> None:
         assert False
