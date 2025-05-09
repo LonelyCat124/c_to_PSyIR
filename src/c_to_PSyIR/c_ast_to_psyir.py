@@ -1,13 +1,13 @@
 from c_to_PSyIR.C_CodeBlock import C_CodeBlock
 import psyclone.psyir.nodes.node as PSynode
 from psyclone.psyir.nodes import (
-        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop, UnaryOperation
+        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop, UnaryOperation, IfBlock
 )
 from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
         Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList,
-        Struct, For, UnaryOp
+        Struct, For, UnaryOp, If
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable
@@ -320,6 +320,31 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         expr = self.visit(node.expr)
         return UnaryOperation.create(c_to_f_unary_operator_map[op], expr)
 
+    def visit_If(self, node: If) -> IfBlock:
+        is_else_if = False
+        cond = self.visit(node.cond)
+        if_body = self.visit(node.iftrue)
+        if not isinstance(if_body, list):
+            if_body = [if_body]
+        if node.iffalse:
+            else_body = self.visit(node.iffalse)
+            if isinstance(node.iffalse, If):
+                is_else_if = True
+            if not isinstance(else_body, list):
+                else_body = [else_body]
+        else:
+            else_body = None
+        ifblock = IfBlock.create(cond, if_body, else_body)
+        ifblock.annotations.append('was_elseif')
+        return ifblock
+
+    def visit_Compound(self, node: Compound) -> list:
+        result = []
+        for child in node:
+            result.append(self.visit(child))
+        return result
+
+
 
 class PSyIR_to_C_Visitor(PSyIRVisitor):
     # TODO
@@ -473,6 +498,30 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         expr = self._visit(node.children[0])
         return UnaryOp(op, expr)
 
+    def ifblock_node(self, node: IfBlock) -> If:
+        cond = self._visit(node.condition)
+        iftrue = []
+        for child in node.if_body:
+            res = self._visit(child)
+            if isinstance(res, list):
+                iftrue.extend(res)
+            else:
+                iftrue.append(res)
+        if node.else_body:
+            iffalse = []
+            for child in node.else_body:
+                res = self._visit(child)
+                if isinstance(res, list):
+                    iffalse.extend(res)
+                else:
+                    iffalse.append(res)
+            if 'was_elseif' in node.annotations:
+                iffalse = iffalse[0]
+            else:
+                iffalse = Compound(iffalse)
+        else:
+            iffalse = None
+        return If(cond, Compound(iftrue), iffalse)
         
     def node_node(self, node: PSynode.Node) -> None:
         assert False
@@ -495,6 +544,16 @@ def translate_to_c():
             }
             for(int e = 0; e < e + 1; e++){
                 a[i] = 2;
+            }
+            if(1){
+                printf("Hello\\n");
+            }
+            if(e > f){
+                a[0] = 1;
+            }else if(e == f){
+                a[1] = 1;
+            }else{
+                a[2] = 1;
             }
         }
     """
