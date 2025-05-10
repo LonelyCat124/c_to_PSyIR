@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 from c_to_PSyIR.C_CodeBlock import C_CodeBlock
 import psyclone.psyir.nodes.node as PSynode
 from psyclone.psyir.nodes import (
@@ -10,8 +12,8 @@ from pycparser.c_ast import (
         Struct, For, UnaryOp, If
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
-from psyclone.psyir.symbols import SymbolTable
-from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol
+from psyclone.psyir.symbols import SymbolTable, StructureType, DataTypeSymbol
+from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol, DataType
 
 type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
                                            ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
@@ -167,12 +169,47 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
 
         return Routine.create(name, children=psyir_children, symbol_table=routine_sym_tab)
 
+    def _get_struct_element(self, element: Node) -> (str, DataType):
+        if isinstance(element.type, Struct):
+            raise NotImplementedError("Structure declaration inside Structure unsupported.")
+        if isinstance(element.type.type, Struct):
+            assert False
+        type_str = element.type.type.names
+        if(len(type_str) > 1):
+            assert False # Need to think what this means - maybe pointers? Or long long int etc.i
+        else:
+            type_str = type_str[0]
+        # Get the type.
+        intrinsic, precision = str_to_type_map.get(type_str, (None, None))
+        if intrinsic is None:
+            assert False # There must be some unknown type object we can do for this like we do for CodeBlocks.
+        # Create a ScalarType for this.
+        datatype = ScalarType(intrinsic, precision)
+        name = element.name
+        return name, datatype
+
+
+    def _unpack_struct(self, struct: Struct) -> (str, StructureType):
+        struct_name = struct.name
+        if not struct_name:
+            raise NotImplementedError("Anonymous structure unsupported");
+        decls = []
+        for decl in struct.decls:
+            name, element = self._get_struct_element(decl)
+            decls.append((name, element, Symbol.Visibility.PUBLIC, None))
+        decl = StructureType.create(decls) 
+        return struct_name, decl
+
     def visit_Decl(self, node: Decl) -> None:
         name = node.name
         typedef = node.type
+        sym_tab = self._symbol_tables[-1]
         # Structure declaration makes a CodeBlock for now.
         if isinstance(node.type, Struct):
-            raise NotImplementedError("Structure declarations not yet implemented.")
+            name, decl = self._unpack_struct(node.type)
+            sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
+            print(sym_tab)
+            return
         # Structure type declaration also makes a Codeblock for now.
         # This is a relatively easy fix though.
         if isinstance(node.type.type, Struct):
@@ -182,13 +219,12 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             assert False # Need to think what this means - maybe pointers? Or long long int etc.i
         else:
             type_str = type_str[0]
-        # For now we assume its an integer <_<
+        # Get the type.
         intrinsic, precision = str_to_type_map.get(type_str, (None, None))
         if intrinsic is None:
             assert False # There must be some unknown type object we can do for this like we do for CodeBlocks.
         # TODO Convert type_str to symbol type - see the mapping on SFP.
         # Get the current symbol table. Its always the lowest one.
-        sym_tab = self._symbol_tables[-1]
         sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=ScalarType(intrinsic, precision))
 
     def visit_Assignment(self, node: Assignment) -> PSyAssignment:
@@ -440,6 +476,8 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         for symbol in node.symbol_table.symbols:
             if isinstance(symbol, DataSymbol):
                 ext.append(self.datasymbol_to_decl(symbol))
+            elif isinstance(symbol, DataTypeSymbol):
+                assert False
         for child in node.children:
             res = self._visit(child)
             if isinstance(res, list):
@@ -529,8 +567,13 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 def translate_to_c():
     code = """
         int x;
+        struct y2{
+            int jj;
+            int kk;
+        };
         struct name{
             double f;
+            struct y2 a;
         };
         void test_func(int d, float e, double f){
             struct name thing;
