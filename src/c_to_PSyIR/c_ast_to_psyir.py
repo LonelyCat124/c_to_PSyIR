@@ -208,7 +208,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         if isinstance(node.type, Struct):
             name, decl = self._unpack_struct(node.type)
             sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
-            print(sym_tab)
             return
         # Structure type declaration also makes a Codeblock for now.
         # This is a relatively easy fix though.
@@ -441,6 +440,16 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # Maybe this isn't correct but we work with it for now.
         return Decl(name, [],[],[],[],typedecl,init=None,bitsize=None)
 
+    def datatypesymbol_to_decl(self, symbol: DataTypeSymbol) -> Decl:
+        dtype = symbol.datatype
+        components = []
+        for component in dtype.components:
+            components.append(Decl(dtype.components[component].datatype.name,[],[],[],[],TypeDecl(declname=# TODO)
+#            components.append(self.datasymbol_to_decl(dtype.components[component].datatype))
+        print(symbol.name)
+        struct_obj = Struct(name=symbol.name, decls=components)
+        assert False
+
     def routine_node(self, node: Routine) -> FuncDef:
         # TODO This isn't how we want to actually do this - we want to recreate the pycparser stuff.
         # For next time.
@@ -477,7 +486,7 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             if isinstance(symbol, DataSymbol):
                 ext.append(self.datasymbol_to_decl(symbol))
             elif isinstance(symbol, DataTypeSymbol):
-                assert False
+                ext.append(self.datatypesymbol_to_decl(symbol))
         for child in node.children:
             res = self._visit(child)
             if isinstance(res, list):
