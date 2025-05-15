@@ -444,7 +444,13 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         dtype = symbol.datatype
         components = []
         for component in dtype.components:
-            components.append(Decl(dtype.components[component].datatype.name,[],[],[],[],TypeDecl(declname=# TODO)
+            print(dtype.components[component].datatype)
+            if not isinstance(dtype.components[component].datatype, ScalarType):
+                assert False
+            subtype = type_map[dtype.components[component].datatype.intrinsic][dtype.components[component].datatype.precision]
+            typedecl = TypeDecl(dtype.components[component].datatype.name, quals=[], align=None, type=IdentifiedType(names=subtype))
+
+#            components.append(Decl(dtype.components[component].datatype.name,[],[],[],[],TypeDecl(declname=# TODO)
 #            components.append(self.datasymbol_to_decl(dtype.components[component].datatype))
         print(symbol.name)
         struct_obj = Struct(name=symbol.name, decls=components)
