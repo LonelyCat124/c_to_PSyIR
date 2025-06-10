@@ -4,17 +4,18 @@ from dataclasses import dataclass
 from c_to_PSyIR.C_CodeBlock import C_CodeBlock
 import psyclone.psyir.nodes.node as PSynode
 from psyclone.psyir.nodes import (
-        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop, UnaryOperation, IfBlock
+        CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop, UnaryOperation, IfBlock,
+        ArrayReference,
 )
 from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
         Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList,
-        Struct, For, UnaryOp, If, PtrDecl, ArrayDecl
+        Struct, For, UnaryOp, If, PtrDecl, ArrayDecl, ArrayRef
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable, StructureType, DataTypeSymbol
-from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol, DataType, ArrayType
+from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol, DataType, ArrayType, UnsupportedType
 
 type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
                                            ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
@@ -66,6 +67,17 @@ c_to_f_unary_operator_map = {
 
 f_to_c_unary_operator_map = invert_map(c_to_f_unary_operator_map)
 
+class UnsupportedCType(DataType):
+
+    def __init__(self, declaration_ast):
+        self._declaration = declaration_ast
+
+    @property
+    def declaration(self):
+        return self._declaration
+
+    def __str__(self):
+        return "UnsupportedCType<>"
 
 class CommentNode(Node):
     __slots__ = {'message', 'coord', '__weakref__'}
@@ -181,7 +193,7 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         if isinstance(element.type, Struct):
             raise NotImplementedError("Structure declaration inside Structure unsupported.")
         if isinstance(element.type.type, Struct):
-            assert False
+            raise NotImplementedError("Structure declaration inside Structure unsupported.")
         type_str = element.type.type.names
         if(len(type_str) > 1):
             assert False # Need to think what this means - maybe pointers? Or long long int etc.i
@@ -190,7 +202,8 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         # Get the type.
         intrinsic, precision = str_to_type_map.get(type_str, (None, None))
         if intrinsic is None:
-            assert False # There must be some unknown type object we can do for this like we do for CodeBlocks.
+            raise NotImplementedError("Unknown intrinsic")
+            # There must be some unknown type object we can do for this like we do for CodeBlocks.
         # Create a ScalarType for this.
         datatype = ScalarType(intrinsic, precision)
         name = element.name
@@ -222,11 +235,22 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         # Get the current symbol table. Its always the lowest one.
         return ScalarType(intrinsic, precision)
 
+    def visit_Struct(self, node: Struct) -> DataTypeSymbol:
+        if node.decls is None:
+            # instance of structure declaration without inline declaration.
+            # Find the structure type
+            for sym_tab in reversed(self._symbol_tables):
+                struct = sym_tab.lookup(node.name, otherwise=None)
+                if struct:
+                    return struct
+            # If we didn't find it then code block time.
+            raise NotImplementedError()
+        else:
+            raise NotImplementedError()
+
     def visit_TypeDecl(self, node: TypeDecl) -> DataType:
         # Structure type declaration also makes a Codeblock for now.
         # This is a relatively easy fix though.
-        if isinstance(node.type, Struct):
-            raise NotImplementedError("Structure initialisation not yet implemented.")
         return self.visit(node.type)
 
     def visit_PtrDecl(self, node: PtrDecl) -> ArrayType:
@@ -245,7 +269,6 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         return ArrayType(subtype, [ArrayType.Extent.DEFERRED])
 
     def visit_ArrayDecl(self, node: ArrayDecl) -> ArrayType:
-        print(node)
         subtype = self.visit(node.type)
         if isinstance(subtype, ArrayType):
             # If its already defined as an array, we need to extend the
@@ -263,19 +286,41 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         sym_tab = self._symbol_tables[-1]
         # Structure declaration makes a CodeBlock for now.
         if isinstance(node.type, Struct):
-            name, decl = self._unpack_struct(node.type)
-            sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
+            try:
+                name, decl = self._unpack_struct(node.type)
+                sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
+            except NotImplementedError as err:
+                # Unsupported structure definitions result in UnsupportedCType
+                name = node.type.name
+                decl = UnsupportedCType(node)
+                sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
             return
         datatype = self.visit(node.type)
-        if name == "k":
-            print(name, datatype)
         if isinstance(datatype, CodeBlock):
-            raise NotImplementedError(f"Unsupported declaration from type {type(node.type)}")
+            datatype = UnsupportedCType(node)
         sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=datatype)
         # If we find a potential array, we need to keep track of it.
         if isinstance(datatype, ArrayType):
             self._possible_arrays.append(PossibleArray(name, sym_tab, len(datatype.shape)))
 
+
+    def visit_ArrayRef(self, node: ArrayRef) -> ArrayReference:
+        name_node = node.name
+        indices = []
+        # TODO This is not totally resilient. Index order may be wrong.
+        while not isinstance(name_node, ID):
+            indices.insert(0, self.visit(name_node.subscript))
+            name_node = name_node.name
+        name = name_node.name
+        sym_tab = self._symbol_tables[-1]
+        symbol = sym_tab.symbols_dict.get(name, None)
+        if not symbol:
+            assert False
+        index = self.visit(node.subscript)
+        indices.append(index)
+        return ArrayReference.create(symbol, indices)
+        # Fail for others for now
+        raise NotImplementedError("ArrayRef NYI")
 
     def visit_Assignment(self, node: Assignment) -> PSyAssignment:
         lhs = self.visit(node.lvalue)
@@ -456,6 +501,14 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # TODO Handle returning comments again
         return [comment, node]
 
+    def arrayreference_node(self, node: ArrayReference) -> ArrayRef:
+        ref = ID(name=node.name)
+        for index in node.indices:
+           subscript = self._visit(index)
+           ref = ArrayRef(name=ref, subscript=subscript)
+
+        return ref
+    
     def reference_node(self, node: Reference) -> ID:
         return ID(name=node.name)
 
@@ -465,7 +518,6 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # Remove comments in case of CodeBlocks
         lhs = self.strip_comments(lhs)
         rhs = self.strip_comments(rhs)
-        # TODO This is bad lmao.
         op = f_to_c_binop_operator_map[node.operator]
         return BinaryOp(op, lhs, rhs)
 
@@ -475,7 +527,8 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         # Remove comments in case of CodeBlocks
         lhs = self.strip_comments(lhs)
         rhs = self.strip_comments(rhs)
-        return Assignment("=", lhs, rhs)
+        assign = Assignment("=", lhs, rhs)
+        return assign
 
     def literal_node(self, node: Literal) -> Constant:
         value = node.value
@@ -499,6 +552,13 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
                     typedecl = ArrayDecl(type=typedecl, dim=self._visit(ind.upper), dim_quals=[])
                     continue
                 typedecl = PtrDecl(quals=[], type=typedecl)
+        elif isinstance(symbol.datatype, DataTypeSymbol):
+            typedecl = Struct(name=symbol.datatype.name, decls=None)
+            typedecl = TypeDecl(declname=name, quals=[], align=None, type=typedecl)
+        elif isinstance(symbol.datatype, UnsupportedCType):
+            return symbol.datatype.declaration
+        else:
+            assert False
         # TODO I assume init is fine for us to enable.
         # NB We can do better with this for sure.
         # Maybe this isn't correct but we work with it for now.
@@ -506,6 +566,8 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
     def datatypesymbol_to_decl(self, symbol: DataTypeSymbol) -> Decl:
         dtype = symbol.datatype
+        if isinstance(dtype, UnsupportedCType):
+            return symbol.datatype.declaration
         components = []
         for component in dtype.components:
             if not isinstance(dtype.components[component].datatype, ScalarType):
@@ -631,10 +693,11 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
                     iffalse.extend(res)
                 else:
                     iffalse.append(res)
-            if 'was_elseif' in node.annotations:
-                iffalse = iffalse[0]
-            else:
-                iffalse = Compound(iffalse)
+            # TODO Can't reproduce the original else if behaviour.
+            #if 'was_elseif' in node.annotations:
+            #    iffalse = iffalse[0]
+            #else:
+            iffalse = Compound(iffalse)
         else:
             iffalse = None
         return If(cond, Compound(iftrue), iffalse)
@@ -654,7 +717,7 @@ def translate_to_c():
             struct y2 a;
         };
         void test_func(int d, float e, double f){
-            struct name thing;
+            struct y2 thing;
             int c;
             int *a;
             int **h;
@@ -678,6 +741,7 @@ def translate_to_c():
                 a[1] = 1;
             }else{
                 a[2] = 1;
+                a[3] = k[25][13];
             }
         }
     """
