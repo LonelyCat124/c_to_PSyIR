@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from c_to_PSyIR.C_CodeBlock import C_CodeBlock
 import psyclone.psyir.nodes.node as PSynode
@@ -9,11 +10,11 @@ from psyclone.psyir.nodes import Assignment as PSyAssignment
 from pycparser import c_parser, c_generator
 from pycparser.c_ast import (
         Node, FileAST, NodeVisitor, FuncDef, Decl, Assignment, ID, BinaryOp, Constant, FuncDecl, TypeDecl, IdentifierType, Compound, ParamList,
-        Struct, For, UnaryOp, If
+        Struct, For, UnaryOp, If, PtrDecl, ArrayDecl
 )
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable, StructureType, DataTypeSymbol
-from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol, DataType
+from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol, DataType, ArrayType
 
 type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
                                            ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
@@ -84,6 +85,13 @@ class CGeneratorExtension(c_generator.CGenerator):
     def visit_CommentNode(self, node: CommentNode) -> str:
         return "/*" + node.message + "*/"
 
+@dataclass
+class PossibleArray():
+    name: str
+    sym_table: SymbolTable
+    dimensions: int
+
+
 class CNode_to_PSyIR_Visitor(NodeVisitor):
     # Based on pycparser generator visitor.
 
@@ -91,9 +99,9 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         super().__init__()
 
         self._symbol_tables = []
+        self._possible_arrays = []
 
     def visit(self, node: Node) -> PSynode.Node:
-        # TODO Can maybe do better with mro ordering like PSyclone
         method = 'visit_' + node.__class__.__name__
         try:
             return getattr(self, method, None)(node)
@@ -200,31 +208,74 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         decl = StructureType.create(decls) 
         return struct_name, decl
 
+    def visit_IdentifierType(self, node: IdentifierType) -> DataType:
+        type_str = node.names
+        if(len(type_str) > 1):
+            raise NotImplementedError(f"Unsure how to handle type_str array {type_str}")
+        else:
+            type_str = type_str[0]
+        # Get the type.
+        intrinsic, precision = str_to_type_map.get(type_str, (None, None))
+        if intrinsic is None:
+            raise NotImplementedError(f"Unsupported type {type_str}")
+        # TODO Convert type_str to symbol type - see the mapping on SFP.
+        # Get the current symbol table. Its always the lowest one.
+        return ScalarType(intrinsic, precision)
+
+    def visit_TypeDecl(self, node: TypeDecl) -> DataType:
+        # Structure type declaration also makes a Codeblock for now.
+        # This is a relatively easy fix though.
+        if isinstance(node.type, Struct):
+            raise NotImplementedError("Structure initialisation not yet implemented.")
+        return self.visit(node.type)
+
+    def visit_PtrDecl(self, node: PtrDecl) -> ArrayType:
+        subtype = self.visit(node.type)
+        # Can't determine if this is an array or pointer until later.
+        # This mostly doesn't matter for declaration and things, but does
+        # matter for accesses in the tree (maybe?)
+        # Make it an array with deferred extent.
+        if isinstance(subtype, ArrayType):
+            # If its already defined as an array, we need to extend
+            # the dimensions by 1.
+            shape = subtype.shape.copy()
+            # Reverse indexing, TBC this implementation is correct.
+            shape.append(ArrayType.Extent.DEFERRED)
+            return ArrayType(subtype.datatype, shape)
+        return ArrayType(subtype, [ArrayType.Extent.DEFERRED])
+
+    def visit_ArrayDecl(self, node: ArrayDecl) -> ArrayType:
+        print(node)
+        subtype = self.visit(node.type)
+        if isinstance(subtype, ArrayType):
+            # If its already defined as an array, we need to extend the
+            # dimensions by 1.
+            shape = subtype.shape.copy()
+            shape.append(self.visit(node.dim))
+            return ArrayType(subtype.datatype, shape)
+        return ArrayType(subtype, [self.visit(node.dim)])
+
+
     def visit_Decl(self, node: Decl) -> None:
         name = node.name
         typedef = node.type
+        # Get the current symbol table. Its always the lowest one.
         sym_tab = self._symbol_tables[-1]
         # Structure declaration makes a CodeBlock for now.
         if isinstance(node.type, Struct):
             name, decl = self._unpack_struct(node.type)
             sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
             return
-        # Structure type declaration also makes a Codeblock for now.
-        # This is a relatively easy fix though.
-        if isinstance(node.type.type, Struct):
-            raise NotImplementedError("Structure initialisation not yet implemented.")
-        type_str = node.type.type.names
-        if(len(type_str) > 1):
-            assert False # Need to think what this means - maybe pointers? Or long long int etc.i
-        else:
-            type_str = type_str[0]
-        # Get the type.
-        intrinsic, precision = str_to_type_map.get(type_str, (None, None))
-        if intrinsic is None:
-            assert False # There must be some unknown type object we can do for this like we do for CodeBlocks.
-        # TODO Convert type_str to symbol type - see the mapping on SFP.
-        # Get the current symbol table. Its always the lowest one.
-        sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=ScalarType(intrinsic, precision))
+        datatype = self.visit(node.type)
+        if name == "k":
+            print(name, datatype)
+        if isinstance(datatype, CodeBlock):
+            raise NotImplementedError(f"Unsupported declaration from type {type(node.type)}")
+        sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=datatype)
+        # If we find a potential array, we need to keep track of it.
+        if isinstance(datatype, ArrayType):
+            self._possible_arrays.append(PossibleArray(name, sym_tab, len(datatype.shape)))
+
 
     def visit_Assignment(self, node: Assignment) -> PSyAssignment:
         lhs = self.visit(node.lvalue)
@@ -433,8 +484,21 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
     def datasymbol_to_decl(self, symbol: DataSymbol) -> Decl:
         name = symbol.name
-        dtype = [type_map[symbol.datatype.intrinsic][symbol.datatype.precision]]
-        typedecl = TypeDecl(declname=name,quals=[], align=None, type=IdentifierType(names=dtype))
+        if isinstance(symbol.datatype, ScalarType):
+            dtype = [type_map[symbol.datatype.intrinsic][symbol.datatype.precision]]
+            typedecl = TypeDecl(declname=name,quals=[], align=None, type=IdentifierType(names=dtype))
+        elif isinstance(symbol.datatype, ArrayType):
+            dtype = symbol.datatype.datatype
+            dtype = [type_map[dtype.intrinsic][dtype.precision]]
+            typedecl = TypeDecl(declname=name, quals=[], align=None, type=IdentifierType(names=dtype))
+            for ind in symbol.datatype.shape:
+                if ind is not ArrayType.Extent.DEFERRED:
+                    if ind.lower.value != "1":
+                        assert False # Unsupported - this is set by PSyclone to 1 by default and this
+                                     # parser doesn't touch it
+                    typedecl = ArrayDecl(type=typedecl, dim=self._visit(ind.upper), dim_quals=[])
+                    continue
+                typedecl = PtrDecl(quals=[], type=typedecl)
         # TODO I assume init is fine for us to enable.
         # NB We can do better with this for sure.
         # Maybe this isn't correct but we work with it for now.
@@ -593,6 +657,9 @@ def translate_to_c():
             struct name thing;
             int c;
             int *a;
+            int **h;
+            int g[50];
+            int k[50][25];
             c = c + 1;
             for(d = 0; d < f; d++){
                 a[d] = 2;
