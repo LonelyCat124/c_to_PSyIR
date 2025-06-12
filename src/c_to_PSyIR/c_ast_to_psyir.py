@@ -1,7 +1,20 @@
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from c_to_PSyIR.C_CodeBlock import C_CodeBlock
+from c_to_PSyIR.c_ast.nodes.comment_node import CommentNode
+from c_to_PSyIR.c_ast.backend.c_generator_extension import CGeneratorExtension
+
+from c_to_PSyIR.psyir.nodes.C_CodeBlock import C_CodeBlock
+from c_to_PSyIR.psyir.nodes.unsupported_c_type import UnsupportedCType
+
+from c_to_PSyIR.psyir.frontend.cnode_to_psyir_visitor import CNode_to_PSyIR_Visitor
+
+from c_to_PSyIR.psyir.utils.operator_utils import (
+        type_map, str_to_type_map, c_to_f_binop_operator_map,
+        f_to_c_binop_operator_map, c_to_f_unary_operator_map,
+        f_to_c_unary_operator_map,
+)
+
 import psyclone.psyir.nodes.node as PSynode
 from psyclone.psyir.nodes import (
         CodeBlock, FileContainer, Routine, Reference, BinaryOperation, Literal, Loop, UnaryOperation, IfBlock,
@@ -16,466 +29,6 @@ from pycparser.c_ast import (
 from psyclone.psyir.backend.visitor import PSyIRVisitor
 from psyclone.psyir.symbols import SymbolTable, StructureType, DataTypeSymbol
 from psyclone.psyir.symbols import INTEGER_TYPE, DataSymbol, ScalarType, ArgumentInterface, ScalarType, Symbol, DataType, ArrayType, UnsupportedType
-
-type_map = {ScalarType.Intrinsic.INTEGER: {ScalarType.Precision.SINGLE: "int", ScalarType.Precision.DOUBLE: "long long int",
-                                           ScalarType.Precision.UNDEFINED: "int", 32: "int32_t", 64: "int64_t", 8: "int8_t"},
-                ScalarType.Intrinsic.REAL: {ScalarType.Precision.SINGLE: "float", ScalarType.Precision.DOUBLE: "double",
-                                            },
-#                ScalarType.Intrinsic.CHARACTER: {ScalarType.Precision.UNDEFINED: "char*"},
-                ScalarType.Intrinsic.BOOLEAN: {ScalarType.Precision.UNDEFINED: "bool"}
-               }
-
-def create_str_to_type_map(type_map: map) -> map:
-    str_to_type_map = {}
-    for intrinsic in type_map.keys():
-        for precision in type_map[intrinsic]:
-            string = type_map[intrinsic][precision]
-            if string not in str_to_type_map.keys():
-                str_to_type_map[string] = (intrinsic, precision)
-    return str_to_type_map
-
-str_to_type_map = create_str_to_type_map(type_map)
-
-def invert_map(in_map: map) -> map:
-    inverted_map = {}
-    for name in in_map.keys():
-        inverted_map[in_map[name]] = name
-    return inverted_map
-
-c_to_f_binop_operator_map = {
-        "+": BinaryOperation.Operator.ADD,
-        "-": BinaryOperation.Operator.SUB,
-        "*": BinaryOperation.Operator.MUL,
-        "/": BinaryOperation.Operator.DIV,
-        "==": BinaryOperation.Operator.EQ, # No difference for logical operations.
-        "!=": BinaryOperation.Operator.NE,
-        ">": BinaryOperation.Operator.GT,
-        "<": BinaryOperation.Operator.LT,
-        ">=": BinaryOperation.Operator.GE,
-        "<=": BinaryOperation.Operator.LE,
-        "&&": BinaryOperation.Operator.AND,
-        "&&": BinaryOperation.Operator.OR,
-}
-
-f_to_c_binop_operator_map = invert_map(c_to_f_binop_operator_map)
-
-c_to_f_unary_operator_map = {
-        "-": UnaryOperation.Operator.MINUS,
-        "+": UnaryOperation.Operator.PLUS,
-        "!": UnaryOperation.Operator.NOT,
-}
-
-f_to_c_unary_operator_map = invert_map(c_to_f_unary_operator_map)
-
-class UnsupportedCType(DataType):
-
-    def __init__(self, declaration_ast):
-        self._declaration = declaration_ast
-
-    @property
-    def declaration(self):
-        return self._declaration
-
-    def __str__(self):
-        return "UnsupportedCType<>"
-
-class CommentNode(Node):
-    __slots__ = {'message', 'coord', '__weakref__'}
-    def __init__(self, message: str, coord=None):
-        self.message = message
-
-    def children(self):
-        return ()
-
-    def __iter__(self):
-        return
-        yield
-
-    attr_names = ()
-
-class CGeneratorExtension(c_generator.CGenerator):
-    def visit_CommentNode(self, node: CommentNode) -> str:
-        return "/*" + node.message + "*/"
-
-@dataclass
-class PossibleArray():
-    name: str
-    sym_table: SymbolTable
-    dimensions: int
-
-
-class CNode_to_PSyIR_Visitor(NodeVisitor):
-    # Based on pycparser generator visitor.
-
-    def __init__(self):
-        super().__init__()
-
-        self._symbol_tables = []
-        self._possible_arrays = []
-
-    def visit(self, node: Node) -> PSynode.Node:
-        method = 'visit_' + node.__class__.__name__
-        try:
-            return getattr(self, method, None)(node)
-            #return getattr(self, method, self.generic_visit)(node)
-        except NotImplementedError as e:
-            code_block = self.generic_visit(node)
-            comment = f"Codeblock created - NYI error {str(e)}"
-            code_block.preceding_comment = comment
-            return code_block
-        except Exception as e:
-            # FIXME Try replacing this Error with a more precise Error.
-            code_block = self.generic_visit(node)
-            comment = "Codeblock created - unsupported code: "
-            comment += f"Failed to handle input node of type '{(type(node))}'. "
-            comment += f"Failed with error {str(e)}"
-            code_block.preceding_comment = comment
-            return code_block
-
-    def generic_visit(self, node: Node) -> C_CodeBlock:
-        # For something we don't handle explicitly we need a C_CodeBlock!
-        # For now we're just making a CodeBlock for everything and not doing
-        # anything smart like fparser2.py - probably better to keep it like
-        # this for reverting to pycparser tree later.
-        print(f"Found a node of type {node.__class__.__name__}")
-        return C_CodeBlock([node], CodeBlock.Structure.STATEMENT)
-
-    def visit_FileAST(self, node: FileAST) -> FileContainer:
-        psyir_children = []
-        # TODO Fix symbol tables (urgh)
-        symbol_table = SymbolTable()
-        self._symbol_tables.append(symbol_table)
-        for child in node:
-            res = self.visit(child)
-            if res:
-                psyir_children.append(res)
-        self._symbol_tables.pop()
-        return FileContainer.create("", symbol_table, psyir_children) 
-
-    def visit_FuncDef(self, node: FuncDef) -> Routine:
-        name = node.decl.name
-
-        routine_sym_tab = SymbolTable()
-        # Add it to the "stack" of symbol tables
-        self._symbol_tables.append(routine_sym_tab)
-        if node.decl.type.args and len(node.decl.type.args.params) > 0:
-            # Time to get the arguments
-            args = []
-            for decl in node.decl.type.args.params:
-                self.visit(decl)
-                name = decl.name
-                sym = routine_sym_tab.lookup(name)
-                sym.interface = ArgumentInterface(
-                        ArgumentInterface.Access.UNKNOWN)
-                args.append(sym)
-            routine_sym_tab.specify_argument_list(args)
-        # Can't handle return type for now
-        # This info is all contained in the FuncDef object of this node.decl.type
-        # Probably this needs to be in some sort of visitor or something but seems
-        # to be relatively complex so need to see what the cparser itself does with
-        # visiting these objects.
-        # Create the Routine's symbol table as it needs to be visible to the children.
-        # For arguments we need to put them in the symbol table we pass to routine.create
-        psyir_children = []
-        for child in node.body:
-            # If the body element returns a node then we add it to the list. 
-            # Things like variable declarations become symbol table things in PSyIR
-            result = self.visit(child)
-            if result:
-                psyir_children.append(result)
-
-        # Now remove the symbol table
-        self._symbol_tables.pop()
-
-        return Routine.create(name, children=psyir_children, symbol_table=routine_sym_tab)
-
-    def _get_struct_element(self, element: Node) -> (str, DataType):
-        if isinstance(element.type, Struct):
-            raise NotImplementedError("Structure declaration inside Structure unsupported.")
-        if isinstance(element.type.type, Struct):
-            raise NotImplementedError("Structure declaration inside Structure unsupported.")
-        type_str = element.type.type.names
-        if(len(type_str) > 1):
-            assert False # Need to think what this means - maybe pointers? Or long long int etc.i
-        else:
-            type_str = type_str[0]
-        # Get the type.
-        intrinsic, precision = str_to_type_map.get(type_str, (None, None))
-        if intrinsic is None:
-            raise NotImplementedError("Unknown intrinsic")
-            # There must be some unknown type object we can do for this like we do for CodeBlocks.
-        # Create a ScalarType for this.
-        datatype = ScalarType(intrinsic, precision)
-        name = element.name
-        return name, datatype
-
-
-    def _unpack_struct(self, struct: Struct) -> (str, StructureType):
-        struct_name = struct.name
-        if not struct_name:
-            raise NotImplementedError("Anonymous structure unsupported");
-        decls = []
-        for decl in struct.decls:
-            name, element = self._get_struct_element(decl)
-            decls.append((name, element, Symbol.Visibility.PUBLIC, None))
-        decl = StructureType.create(decls) 
-        return struct_name, decl
-
-    def visit_IdentifierType(self, node: IdentifierType) -> DataType:
-        type_str = node.names
-        if(len(type_str) > 1):
-            raise NotImplementedError(f"Unsure how to handle type_str array {type_str}")
-        else:
-            type_str = type_str[0]
-        # Get the type.
-        intrinsic, precision = str_to_type_map.get(type_str, (None, None))
-        if intrinsic is None:
-            raise NotImplementedError(f"Unsupported type {type_str}")
-        # TODO Convert type_str to symbol type - see the mapping on SFP.
-        # Get the current symbol table. Its always the lowest one.
-        return ScalarType(intrinsic, precision)
-
-    def visit_Struct(self, node: Struct) -> DataTypeSymbol:
-        if node.decls is None:
-            # instance of structure declaration without inline declaration.
-            # Find the structure type
-            for sym_tab in reversed(self._symbol_tables):
-                struct = sym_tab.lookup(node.name, otherwise=None)
-                if struct:
-                    return struct
-            # If we didn't find it then code block time.
-            raise NotImplementedError()
-        else:
-            raise NotImplementedError()
-
-    def visit_TypeDecl(self, node: TypeDecl) -> DataType:
-        # Structure type declaration also makes a Codeblock for now.
-        # This is a relatively easy fix though.
-        return self.visit(node.type)
-
-    def visit_PtrDecl(self, node: PtrDecl) -> ArrayType:
-        subtype = self.visit(node.type)
-        # Can't determine if this is an array or pointer until later.
-        # This mostly doesn't matter for declaration and things, but does
-        # matter for accesses in the tree (maybe?)
-        # Make it an array with deferred extent.
-        if isinstance(subtype, ArrayType):
-            # If its already defined as an array, we need to extend
-            # the dimensions by 1.
-            shape = subtype.shape.copy()
-            # Reverse indexing, TBC this implementation is correct.
-            shape.append(ArrayType.Extent.DEFERRED)
-            return ArrayType(subtype.datatype, shape)
-        return ArrayType(subtype, [ArrayType.Extent.DEFERRED])
-
-    def visit_ArrayDecl(self, node: ArrayDecl) -> ArrayType:
-        subtype = self.visit(node.type)
-        if isinstance(subtype, ArrayType):
-            # If its already defined as an array, we need to extend the
-            # dimensions by 1.
-            shape = subtype.shape.copy()
-            shape.append(self.visit(node.dim))
-            return ArrayType(subtype.datatype, shape)
-        return ArrayType(subtype, [self.visit(node.dim)])
-
-
-    def visit_Decl(self, node: Decl) -> None:
-        name = node.name
-        typedef = node.type
-        # Get the current symbol table. Its always the lowest one.
-        sym_tab = self._symbol_tables[-1]
-        # Structure declaration makes a CodeBlock for now.
-        if isinstance(node.type, Struct):
-            try:
-                name, decl = self._unpack_struct(node.type)
-                sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
-            except NotImplementedError as err:
-                # Unsupported structure definitions result in UnsupportedCType
-                name = node.type.name
-                decl = UnsupportedCType(node)
-                sym_tab.new_symbol(name, symbol_type=DataTypeSymbol, datatype=decl)
-            return
-        datatype = self.visit(node.type)
-        if isinstance(datatype, CodeBlock):
-            datatype = UnsupportedCType(node)
-        sym_tab.new_symbol(name, symbol_type=DataSymbol, datatype=datatype)
-        # If we find a potential array, we need to keep track of it.
-        if isinstance(datatype, ArrayType):
-            self._possible_arrays.append(PossibleArray(name, sym_tab, len(datatype.shape)))
-
-
-    def visit_ArrayRef(self, node: ArrayRef) -> ArrayReference:
-        name_node = node.name
-        indices = []
-        # TODO This is not totally resilient. Index order may be wrong.
-        while not isinstance(name_node, ID):
-            indices.insert(0, self.visit(name_node.subscript))
-            name_node = name_node.name
-        name = name_node.name
-        sym_tab = self._symbol_tables[-1]
-        symbol = sym_tab.symbols_dict.get(name, None)
-        if not symbol:
-            assert False
-        index = self.visit(node.subscript)
-        indices.append(index)
-        return ArrayReference.create(symbol, indices)
-        # Fail for others for now
-        raise NotImplementedError("ArrayRef NYI")
-
-    def visit_Assignment(self, node: Assignment) -> PSyAssignment:
-        lhs = self.visit(node.lvalue)
-        rhs = self.visit(node.rvalue)
-        return PSyAssignment.create(lhs, rhs)
-
-    def visit_ID(self, node: ID) -> Reference:
-        # Get the symbol table.
-        sym_tab = self._symbol_tables[-1]
-        symbol = sym_tab.symbols_dict.get(node.name, None)
-        if not symbol:
-            assert False
-        # We should probably do better since maybe this isn't just a basic symbol but oh well.
-        # TODO
-        return Reference(symbol)
-
-    def visit_BinaryOp(self, node: BinaryOp) -> BinaryOperation:
-        lhs = self.visit(node.left)
-        # TODO Op needs a string to operator conversion. Think this is on SFP as well
-        op = c_to_f_binop_operator_map.get(node.op, None)
-        if not op:
-            raise NotImplementedError("Unsupported BinaryOperation operator")
-        rhs = self.visit(node.right)
-        return BinaryOperation.create(op, lhs, rhs)
-
-    def visit_Constant(self, node: Constant) -> Literal:
-        type_str = node.type
-        value = node.value
-        # For now we assume its an integer <_<
-        if type_str != "int":
-            assert False
-        return Literal(value, INTEGER_TYPE)
-
-    def _check_loop_init_validity(self, loop_init: Node) -> (str, Node):
-        # Op must be "="
-        if loop_init.op != "=":
-            raise NotImplementedError("Operations other than = aren't supported on loop init statements")
-        if not isinstance(loop_init.lvalue, ID):
-            raise NotImplementedError("Got a loop_init.lvalue that isn't an ID, don't understand.")
-        loop_var_name = loop_init.lvalue.name
-        loop_start = self.visit(loop_init.rvalue)
-        return loop_var_name, loop_start
-
-    def _check_loop_stop_validity(self, loop_stop: Node, loop_var: Symbol, loop_step: Literal) -> PSynode.Node:
-        if not isinstance(loop_stop, BinaryOp):
-            raise NotImplementedError("Only support BinaryOp loop_stop conditions")
-        # Unpack the loop_stop
-        op = loop_stop.op
-        left = loop_stop.left
-        right = loop_stop.right
-        left_loop_var = False
-        right_loop_var = False
-        if isinstance(left, ID) and left.name == loop_var.name:
-            left_loop_var = True
-        if isinstance(right, ID) and right.name == loop_var.name:
-            right_loop_var = True
-        if not left_loop_var and not right_loop_var:
-            raise NotImplementedError("The lhs or rhs of the loop_stop condition must be the loop variable")
-        if left_loop_var and right_loop_var:
-            raise NotImplementedError("Can't handle a loop_var comparison with itself")
-        step_as_int = int(loop_step.value)
-        if step_as_int > 0:
-            if left_loop_var and op == "<":
-                return self.visit(right)
-            if left_loop_var and op == "<=":
-                raise NotImplementedError("Support for <= in loop condition NYI")
-            if right_loop_var and op == ">":
-                return self.visit(left)
-            if right_loop_var and op == ">=":
-                raise NotImplementedError("Support for >= in loop condition NYI")
-        if step_as_int < 0:
-            if left_loop_var and op == ">":
-                return self.visit(right)
-            if left_loop_var and op == ">=":
-                raise NotImplementedError("Support for >= in loop condition NYI")
-            if right_loop_var and op == "<":
-                return self.visit(left)
-            if right_loop_var and op == "<=":
-                raise NotImplementedError("Support for <= in loop condition NYI")
-
-        raise NotImplementedError("Unsupported loop stop condition")
-
-
-    def _check_loop_step_validity(self, loop_step: Node) -> PSynode.Node:
-        if isinstance(loop_step, UnaryOp):
-            if loop_step.op == "p++":
-                return Literal("1", INTEGER_TYPE)
-            elif loop_step.op == "p--":
-                return Literal("-1", INTEGER_TYPE)
-            else:
-                raise NotImplementedError("Unsupported UnaryOp in loop_step")
-        else:
-            raise NotImplementedError("Non-unary op steps NYI")
-
-    def visit_For(self, node: For) -> Loop:
-        start = node.init
-        if not isinstance(node.init, Assignment):
-            raise NotImplementedError("For loops with declarations aren't supported.")
-        # start needs to be an integer value set assignment.
-        loop_var_name, start_cond = self._check_loop_init_validity(start)
-        loop_var = None
-        for symbol_table in self._symbol_tables[::-1]:
-            var_symbol = symbol_table.lookup(loop_var_name, otherwise=None)
-            if var_symbol is not None:
-                loop_var = var_symbol
-                break
-        if not loop_var:
-            raise NotImplementedError("Failed to find the symbol of the Loop")
-        # TODO Move this thing up into _check_loop_init_validity and also check the
-        # symbol is an integer.
-        step = node.next
-        step_cond = self._check_loop_step_validity(step)
-        # Step condition needs to be a ++, --, +=, -= or equivalent statement.
-        stop = node.cond
-        stop_cond = self._check_loop_stop_validity(stop, loop_var, step_cond)
-        # Stop condition needs to be a < statement if step is positive increment, or
-        # a > statement if step is a negative increment and must be relative to the start
-        # assignment
-        # TODO Check the Loop condition is ok - needs to be basic for PSyclone
-        # to parse it.
-        body = []
-        for child in node.stmt:
-            body.append(self.visit(child))
-        return Loop.create(loop_var, start_cond, stop_cond, step_cond, body)
-
-    def visit_UnaryOp(self, node: UnaryOp) -> UnaryOperation:
-        op = node.op
-        expr = self.visit(node.expr)
-        return UnaryOperation.create(c_to_f_unary_operator_map[op], expr)
-
-    def visit_If(self, node: If) -> IfBlock:
-        is_else_if = False
-        cond = self.visit(node.cond)
-        if_body = self.visit(node.iftrue)
-        if not isinstance(if_body, list):
-            if_body = [if_body]
-        if node.iffalse:
-            else_body = self.visit(node.iffalse)
-            if isinstance(node.iffalse, If):
-                is_else_if = True
-            if not isinstance(else_body, list):
-                else_body = [else_body]
-        else:
-            else_body = None
-        ifblock = IfBlock.create(cond, if_body, else_body)
-        ifblock.annotations.append('was_elseif')
-        return ifblock
-
-    def visit_Compound(self, node: Compound) -> list:
-        result = []
-        for child in node:
-            result.append(self.visit(child))
-        return result
-
-
 
 class PSyIR_to_C_Visitor(PSyIRVisitor):
     # TODO
@@ -706,34 +259,36 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
         assert False
 
 def translate_to_c():
+     #   int x;
+     #   struct y2{
+     #       int jj;
+     #       int kk;
+     #   };
+     #   struct name{
+     #       double f;
+     #       struct y2 a;
+     #   };
+#            struct y2 thing;
+#                printf("Hello\\n");
     code = """
-        int x;
-        struct y2{
-            int jj;
-            int kk;
-        };
-        struct name{
-            double f;
-            struct y2 a;
-        };
         void test_func(int d, float e, double f){
-            struct y2 thing;
             int c;
             int *a;
             int **h;
             int g[50];
             int k[50][25];
+            int i;
+            int l;
             c = c + 1;
             for(d = 0; d < f; d++){
                 a[d] = 2;
                 a[d] = c + -1;
                 a[d] = a[d] - 1;
             }
-            for(int e = 0; e < e + 1; e++){
+            for(l = 0; l < f; l++){
                 a[i] = 2;
             }
             if(1){
-                printf("Hello\\n");
             }
             if(e > f){
                 a[0] = 1;
@@ -751,6 +306,7 @@ def translate_to_c():
 
     cnode_to_psyir = CNode_to_PSyIR_Visitor()
     psyir = cnode_to_psyir.visit(ast)
+    print(psyir.debug_string())
 
     psyir_to_c = PSyIR_to_C_Visitor()
     print(psyir_to_c(psyir))
