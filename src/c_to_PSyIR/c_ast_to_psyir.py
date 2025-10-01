@@ -56,9 +56,15 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
 
     def arrayreference_node(self, node: ArrayReference) -> ArrayRef:
         ref = ID(name=node.name)
-        for index in node.indices:
-           subscript = self._visit(index)
-           ref = ArrayRef(name=ref, subscript=subscript)
+        for index in node.indices[::-1]:
+            if isinstance(index, Literal):
+                new_index = Literal(str(int(index.value)+1), INTEGER_TYPE)
+            else:
+                # Otherwise its a binary operation we created on input
+                # TODO Check this is true because if we had generic PSyIR input it might not be!
+                new_index =  index.children[0]
+            subscript = self._visit(new_index)
+            ref = ArrayRef(name=ref, subscript=subscript)
 
         return ref
     

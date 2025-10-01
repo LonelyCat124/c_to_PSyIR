@@ -396,7 +396,25 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             assert False
         index = self.visit(node.subscript)
         indices.append(index)
-        return PSyIR.ArrayReference.create(symbol, indices)
+        new_indices = []
+        for index in indices[:]:
+            if isinstance(index, PSyIR.Literal):
+                new_indices.append(
+                    PSyIR.Literal(str(int(index.value)-1),
+                                  index.datatype
+                    )
+                )
+            else:
+                new_indices.append(
+                    PSyIR.BinaryOperation.create(
+                        PSyIR.BinaryOperation.Operator.SUB,
+                        index.copy(),
+                        PSyIR.Literal("1", PSySym.INTEGER_TYPE)
+                    )
+                )
+
+        new_indices.reverse()
+        return PSyIR.ArrayReference.create(symbol, new_indices)
 
     def visit_Assignment(self, node: Assignment) -> PSyIR.Assignment:
         '''
