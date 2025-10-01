@@ -18,8 +18,6 @@ from pycparser.c_ast import (
 )
 
 
-#FIXME Need to add docstrings for this.
-
 @dataclass
 class PossibleArray():
     '''
@@ -439,12 +437,13 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         '''
         type_str = node.type
         value = node.value
-        # FIXME For now we assume its an integer <_<
-        if type_str != "int":
-            assert False
-        return PSyIR.Literal(value, PSySym.INTEGER_TYPE)
+        try:
+            dtype = str_to_type_map[type_str]
+        except ValueError:
+            raise NotImplementedError("Unsupported Literal type")
+        return PSyIR.Literal(value, PSySym.ScalarType(dtype[0], dtype[1]))
 
-    def _check_loop_init_validity(self, loop_init: Node) -> (str, PsyIR.Node):
+    def _check_loop_init_validity(self, loop_init: Node) -> (str, PSyIR.Node):
         '''
         Helper function to check the initialisation of a c_ast Loop node.
 
@@ -617,7 +616,8 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
         else:
             else_body = None
         ifblock = PSyIR.IfBlock.create(cond, if_body, else_body)
-        ifblock.annotations.append('was_elseif') # FIXME Why are we always doing this
+        if is_else_if:
+            ifblock.annotations.append('was_elseif') # Untested, may be wrong.
         return ifblock
 
     def visit_Compound(self, node: Compound) -> list:

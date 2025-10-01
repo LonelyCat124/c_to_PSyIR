@@ -279,6 +279,7 @@ def translate_to_c():
             int k[50][25];
             int i;
             int l;
+            float j;
             c = c + 1;
             for(d = 0; d < f; d++){
                 a[d] = 2;
@@ -288,6 +289,7 @@ def translate_to_c():
             for(l = 0; l < f; l++){
                 a[i] = 2;
             }
+            j = 1.0;
             if(1){
             }
             if(e > f){
@@ -309,6 +311,7 @@ def translate_to_c():
     print(psyir.debug_string())
 
     psyir_to_c = PSyIR_to_C_Visitor()
+    print(psyir.view())
     print(psyir_to_c(psyir))
 
 translate_to_c()

@@ -25,7 +25,7 @@ class C_CodeBlock(CodeBlock, CMixin):
         return self._c_nodes
 
 
-    def node_str(self, color: bool = True) -> str:
+    def node_str(self, colour: bool = True) -> str:
         return (f"{self.coloured_name(colour)}["
                 f"{list(map(type, self._c_nodes))}]")
 
