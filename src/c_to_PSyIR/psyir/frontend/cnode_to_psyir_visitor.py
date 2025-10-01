@@ -304,9 +304,27 @@ class CNode_to_PSyIR_Visitor(NodeVisitor):
             # If its already defined as an array, we need to extend the
             # dimensions by 1.
             shape = subtype.shape.copy()
-            shape.append(self.visit(node.dim))
+            dim = self.visit(node.dim)
+            if isinstance(dim, PSyIR.Literal):
+                dim = PSySym.ArrayType.ArrayBounds(
+                        PSyIR.Literal("0", PSySym.INTEGER_TYPE),
+                        PSyIR.Literal(
+                            str(int(dim.value)-1),
+                            PSySym.INTEGER_TYPE
+                        )
+                )
+            shape.append(dim)
             return PSySym.ArrayType(subtype.datatype, shape)
-        return PSySym.ArrayType(subtype, [self.visit(node.dim)])
+        dim = self.visit(node.dim)
+        if isinstance(dim, PSyIR.Literal):
+            dim = PSySym.ArrayType.ArrayBounds(
+                    PSyIR.Literal("0", PSySym.INTEGER_TYPE),
+                    PSyIR.Literal(
+                        str(int(dim.value)-1),
+                        PSySym.INTEGER_TYPE
+                    )
+            )
+        return PSySym.ArrayType(subtype, [dim])
 
 
     def visit_Decl(self, node: Decl) -> None:

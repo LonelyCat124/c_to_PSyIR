@@ -99,10 +99,15 @@ class PSyIR_to_C_Visitor(PSyIRVisitor):
             typedecl = TypeDecl(declname=name, quals=[], align=None, type=IdentifierType(names=dtype))
             for ind in symbol.datatype.shape:
                 if ind is not ArrayType.Extent.DEFERRED:
-                    if ind.lower.value != "1":
-                        assert False # Unsupported - this is set by PSyclone to 1 by default and this
+                    if ind.lower.value != "0":
+                        assert False # Unsupported - this is set by the frontend to 0 by default and this
                                      # parser doesn't touch it
-                    typedecl = ArrayDecl(type=typedecl, dim=self._visit(ind.upper), dim_quals=[])
+                    typedecl = ArrayDecl(
+                        type=typedecl,
+                        dim=self._visit(
+                            Literal(str(int(ind.upper.value)+1), INTEGER_TYPE)),
+                        dim_quals=[]
+                    )
                     continue
                 typedecl = PtrDecl(quals=[], type=typedecl)
         elif isinstance(symbol.datatype, DataTypeSymbol):
